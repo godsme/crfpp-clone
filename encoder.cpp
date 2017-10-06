@@ -243,7 +243,11 @@ struct CRFTrainer {
     float C;
     size_t all;
     bool orthant;
+    double rate;
     size_t total_iter;
+    double serr;
+    double terr;
+
 
     CRFTrainer( const std::vector<TaggerImpl* > &x
               , EncoderFeatureIndex *feature_index
@@ -252,7 +256,8 @@ struct CRFTrainer {
               , size_t maxitr
               , unsigned short thread_num
               , float C
-              , bool orthant)
+              , bool orthant
+              , double rate)
             : old_obj(1e+37)
             , converge(0)
             , thread(thread_num)
@@ -265,7 +270,10 @@ struct CRFTrainer {
             , C(C)
             , all(0)
             , orthant(orthant)
+            , rate(rate)
             , total_iter(0)
+            , serr(1.0)
+            , terr(1.0)
     {
         for (size_t i = 0; i < thread_num; i++) {
           thread[i].start_i = i;
@@ -330,9 +338,11 @@ struct CRFTrainer {
 
             double diff = (total_iter == 0 ? 1.0 :
                            std::abs(old_obj - thread[0].obj)/old_obj);
+            serr = 1.0 * thread[0].zeroone / x.size();
+            terr = 1.0 * thread[0].err / all;
             std::cout << "iter="  << total_iter
-                      << " terr=" << 1.0 * thread[0].err / all
-                      << " serr=" << 1.0 * thread[0].zeroone / x.size()
+                      << " terr=" << terr
+                      << " serr=" << serr
                       << " act=" << num_nonzero
                       << " obj=" << thread[0].obj
                       << " diff="  << diff << std::endl;
@@ -360,6 +370,8 @@ struct CRFTrainer {
     }
 
     bool save(const char *modelfile, bool textmodelfile) {
+        if(serr > rate || terr > rate) return true;
+        std::cout << "==========check-point==========" << std::endl;
         if (!feature_index->save(modelfile, textmodelfile)) {
           std::cerr << feature_index->what() << std::endl;
           return false;
@@ -376,7 +388,6 @@ struct CRFTrainer {
             switch (status)
             {
             case CONTINUE:
-                std::cout << "==========check-point==========" << std::endl;
                 if(!save(modelfile, textmodelfile)) return false;
                 break;
             case DONE:
@@ -393,6 +404,7 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
             EncoderFeatureIndex *feature_index,
             double *alpha,
             size_t batch,
+            double rate,
             size_t maxitr,
             float C,
             double eta,
@@ -409,7 +421,8 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
               , maxitr
               , thread_num
               , C
-              , orthant);
+              , orthant
+              , rate);
     return trainer.run(batch, modelfile, textmodelfile);
 
 #if 0
@@ -514,6 +527,7 @@ bool Encoder::learn(const char *templfile,
                     const char *modelfile,
                     bool textmodelfile,
                     size_t batch,
+                    double rate,
                     size_t maxitr,
                     size_t freq,
                     double eta,
@@ -532,6 +546,8 @@ bool Encoder::learn(const char *templfile,
   CHECK_FALSE(thread_num == 1)
       << "This architecture doesn't support multi-thrading";
 #endif
+
+  if(rate > 1.0) rate = 1.0;
 
   if (algorithm == MIRA && thread_num > 1) {
     std::cerr <<  "MIRA doesn't support multi-thrading. use thread_num=1"
@@ -601,6 +617,7 @@ bool Encoder::learn(const char *templfile,
   std::cout << "eta:                 " << eta << std::endl;
   std::cout << "C:                   " << C << std::endl;
   std::cout << "Batch:               " << batch << std::endl;
+  std::cout << "Rate:                " << rate  << std::endl;
   std::cout << "shrinking size:      " << shrinking_size
             << std::endl;
 
@@ -615,13 +632,13 @@ bool Encoder::learn(const char *templfile,
       break;
     case CRF_L2:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  batch, maxitr, C, eta, shrinking_size, thread_num, false, modelfile, textmodelfile)) {
+                  batch, rate, maxitr, C, eta, shrinking_size, thread_num, false, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L2 execute error");
       }
       break;
     case CRF_L1:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  batch, maxitr, C, eta, shrinking_size, thread_num, true, modelfile, textmodelfile)) {
+                  batch, rate, maxitr, C, eta, shrinking_size, thread_num, true, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L1 execute error");
       }
       break;
@@ -655,6 +672,8 @@ const CRFPP::Option long_options[] = {
    "convert text model to binary model" },
   {"batch",  'b',  "0",       "INT",
     "number of check point batch" },
+  {"rate",     'r', "0.01",    "FLOAT",
+     "set check-point threshold of error rate" },
   {"textmodel", 't', 0,       0,
    "build also text model file for debugging" },
   {"algorithm",  'a', "CRF",   "(CRF|MIRA)", "select training algorithm" },
@@ -688,6 +707,7 @@ int crfpp_learn(const Param &param) {
   const double         eta            = param.get<float>("eta");
   const bool           textmodel      = param.get<bool>("textmodel");
   const size_t         batch          = param.get<int>("batch");
+  const double         rate           = param.get<double>("rate");
   const unsigned short thread         =
       CRFPP::getThreadSize(param.get<unsigned short>("thread"));
   const unsigned short shrinking_size
@@ -719,7 +739,7 @@ int crfpp_learn(const Param &param) {
                        rest[1].c_str(),
                        rest[2].c_str(),
                        textmodel,
-                       batch, maxiter, freq, eta, C, thread, shrinking_size,
+                       batch, rate, maxiter, freq, eta, C, thread, shrinking_size,
                        algorithm)) {
       std::cerr << encoder.what() << std::endl;
       return -1;

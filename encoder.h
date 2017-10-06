@@ -16,7 +16,7 @@ class Encoder {
   enum { CRF_L2, CRF_L1, MIRA };
   bool learn(const char *, const char *,
              const char *,
-             bool, size_t, size_t, size_t,
+             bool, size_t, double, size_t, size_t,
              double, double,
              unsigned short,
              unsigned short, int);
