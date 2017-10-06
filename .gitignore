@@ -1,0 +1,7 @@
+Makefile
+Makefile.msvc
+config.h
+config.log
+config.status
+libtool
+stamp-h1

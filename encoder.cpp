@@ -191,6 +191,201 @@ bool runMIRA(const std::vector<TaggerImpl* > &x,
   return true;
 }
 
+struct SubTrainner {
+    double *alpha;
+    float C;
+
+    SubTrainner(double *alpha, float C): alpha(alpha), C(C) {}
+
+    virtual size_t collect(CRFEncoderThread& thread, size_t size) = 0;
+    virtual ~SubTrainner(){}
+};
+
+struct OrthantCollector : SubTrainner {
+
+    OrthantCollector(double *alpha, float C): SubTrainner(alpha, C) {}
+    size_t collect(CRFEncoderThread& thread, size_t size)
+    {
+        size_t num_nonzero = 0;
+        for (size_t k = 0; k < size; ++k) {
+            thread.obj += std::abs(alpha[k] / C);
+            if (alpha[k] != 0.0) {
+              ++num_nonzero;
+            }
+        }
+        return num_nonzero;
+    }
+};
+
+struct NonOrthantCollector : SubTrainner {
+    NonOrthantCollector(double *alpha, float C): SubTrainner(alpha, C) {}
+    size_t collect(CRFEncoderThread& thread, size_t size)
+    {
+        for (size_t k = 0; k < size; ++k) {
+          thread.obj += (alpha[k] * alpha[k] /(2.0 * C));
+          thread.expected[k] += alpha[k] / C;
+        }
+        return size;
+    }
+};
+
+struct CRFTrainer {
+    double old_obj;
+    int    converge;
+    LBFGS lbfgs;
+    std::vector<CRFEncoderThread> thread;
+    const std::vector<TaggerImpl* > &x;
+    EncoderFeatureIndex *feature_index;
+    unsigned short thread_num;
+    double *alpha;
+    double eta;
+    size_t maxitr;
+    float C;
+    size_t all;
+    bool orthant;
+    size_t total_iter;
+
+    CRFTrainer( const std::vector<TaggerImpl* > &x
+              , EncoderFeatureIndex *feature_index
+              , double *alpha
+              , double eta
+              , size_t maxitr
+              , unsigned short thread_num
+              , float C
+              , bool orthant)
+            : old_obj(1e+37)
+            , converge(0)
+            , thread(thread_num)
+            , x(x)
+            , feature_index(feature_index)
+            , thread_num(thread_num)
+            , alpha(alpha)
+            , eta(eta)
+            , maxitr(maxitr)
+            , C(C)
+            , all(0)
+            , orthant(orthant)
+            , total_iter(0)
+    {
+        for (size_t i = 0; i < thread_num; i++) {
+          thread[i].start_i = i;
+          thread[i].size = x.size();
+          thread[i].thread_num = thread_num;
+          thread[i].x = const_cast<TaggerImpl **>(&x[0]);
+          thread[i].expected.resize(feature_index->size());
+        }
+
+        for (size_t i = 0; i < x.size(); ++i) {
+          all += x[i]->size();
+        }
+    }
+
+    void doRunOneIter() {
+        for (size_t i = 0; i < thread_num; ++i) {
+          thread[i].start();
+        }
+
+        for (size_t i = 0; i < thread_num; ++i) {
+          thread[i].join();
+        }
+    }
+
+    size_t collectIterResult() {
+        for (size_t i = 1; i < thread_num; ++i) {
+            thread[0].obj += thread[i].obj;
+            thread[0].err += thread[i].err;
+            thread[0].zeroone += thread[i].zeroone;
+            for (size_t k = 0; k < feature_index->size(); ++k) {
+               thread[0].expected[k] += thread[i].expected[k];
+            }
+        }
+
+        size_t num_nonzero = 0;
+        if (orthant) {   // L1
+          for (size_t k = 0; k < feature_index->size(); ++k) {
+            thread[0].obj += std::abs(alpha[k] / C);
+            if (alpha[k] != 0.0) {
+              ++num_nonzero;
+            }
+          }
+        } else {
+          num_nonzero = feature_index->size();
+          for (size_t k = 0; k < feature_index->size(); ++k) {
+            thread[0].obj += (alpha[k] * alpha[k] /(2.0 * C));
+            thread[0].expected[k] += alpha[k] / C;
+          }
+        }
+
+        return num_nonzero;
+    }
+
+    enum Status{ CONTINUE, DONE, FAIL};
+
+    Status runOneBatch(size_t batch) {
+        for(size_t i=0; i<batch; i++) {
+            total_iter++;
+            doRunOneIter();
+            size_t num_nonzero = collectIterResult();
+
+
+            double diff = (total_iter == 0 ? 1.0 :
+                           std::abs(old_obj - thread[0].obj)/old_obj);
+            std::cout << "iter="  << total_iter
+                      << " terr=" << 1.0 * thread[0].err / all
+                      << " serr=" << 1.0 * thread[0].zeroone / x.size()
+                      << " act=" << num_nonzero
+                      << " obj=" << thread[0].obj
+                      << " diff="  << diff << std::endl;
+            old_obj = thread[0].obj;
+
+            if (diff < eta) {
+              converge++;
+            } else {
+              converge = 0;
+            }
+
+            if (total_iter > maxitr || converge == 3) {
+                return DONE;
+            }
+
+            if (lbfgs.optimize(feature_index->size(),
+                               &alpha[0],
+                               thread[0].obj,
+                               &thread[0].expected[0], orthant, C) <= 0) {
+              return FAIL;
+            }
+        }
+
+        return CONTINUE;
+    }
+
+    bool save(const char *modelfile, bool textmodelfile) {
+        if (!feature_index->save(modelfile, textmodelfile)) {
+          std::cerr << feature_index->what() << std::endl;
+          return false;
+        }
+        return true;
+    }
+
+    bool run(const char *modelfile, bool textmodelfile) {
+        Status status = CONTINUE;
+        while(status == CONTINUE) {
+            status = runOneBatch(20);
+            switch (status)
+            {
+            case CONTINUE:
+                if(!save(modelfile, textmodelfile)) return false;
+                break;
+            case DONE:
+                return true;
+            default:
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 bool runCRF(const std::vector<TaggerImpl* > &x,
             EncoderFeatureIndex *feature_index,
             double *alpha,
@@ -199,7 +394,21 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
             double eta,
             unsigned short shrinking_size,
             unsigned short thread_num,
-            bool orthant) {
+            bool orthant,
+            const char *modelfile,
+            bool textmodelfile) {
+
+    CRFTrainer trainer( x
+              , feature_index
+              , alpha
+              , eta
+              , maxitr
+              , thread_num
+              , C
+              , orthant);
+    return trainer.run(modelfile, textmodelfile);
+
+#if 0
   double old_obj = 1e+37;
   int    converge = 0;
   LBFGS lbfgs;
@@ -284,6 +493,7 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
   }
 
   return true;
+#endif
 }
 
 bool Encoder::convert(const char* textfilename,
@@ -399,13 +609,13 @@ bool Encoder::learn(const char *templfile,
       break;
     case CRF_L2:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+                  maxitr, C, eta, shrinking_size, thread_num, false, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L2 execute error");
       }
       break;
     case CRF_L1:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, true)) {
+                  maxitr, C, eta, shrinking_size, thread_num, true, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L1 execute error");
       }
       break;
@@ -523,4 +733,3 @@ int crfpp_learn(int argc, char **argv) {
   param.open(argc, argv, CRFPP::long_options);
   return CRFPP::crfpp_learn(param);
 }
-
