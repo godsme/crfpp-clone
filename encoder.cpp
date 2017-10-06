@@ -367,13 +367,16 @@ struct CRFTrainer {
         return true;
     }
 
-    bool run(const char *modelfile, bool textmodelfile) {
+    bool run(size_t batch, const char *modelfile, bool textmodelfile) {
+        if(batch == 0) batch = maxitr;
+
         Status status = CONTINUE;
         while(status == CONTINUE) {
-            status = runOneBatch(20);
+            status = runOneBatch(batch);
             switch (status)
             {
             case CONTINUE:
+                std::cout << "==========check-point==========" << std::endl;
                 if(!save(modelfile, textmodelfile)) return false;
                 break;
             case DONE:
@@ -389,6 +392,7 @@ struct CRFTrainer {
 bool runCRF(const std::vector<TaggerImpl* > &x,
             EncoderFeatureIndex *feature_index,
             double *alpha,
+            size_t batch,
             size_t maxitr,
             float C,
             double eta,
@@ -406,7 +410,7 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
               , thread_num
               , C
               , orthant);
-    return trainer.run(modelfile, textmodelfile);
+    return trainer.run(batch, modelfile, textmodelfile);
 
 #if 0
   double old_obj = 1e+37;
@@ -509,6 +513,7 @@ bool Encoder::learn(const char *templfile,
                     const char *trainfile,
                     const char *modelfile,
                     bool textmodelfile,
+                    size_t batch,
                     size_t maxitr,
                     size_t freq,
                     double eta,
@@ -609,13 +614,13 @@ bool Encoder::learn(const char *templfile,
       break;
     case CRF_L2:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false, modelfile, textmodelfile)) {
+                  batch, maxitr, C, eta, shrinking_size, thread_num, false, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L2 execute error");
       }
       break;
     case CRF_L1:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, true, modelfile, textmodelfile)) {
+                  batch, maxitr, C, eta, shrinking_size, thread_num, true, modelfile, textmodelfile)) {
         WHAT_ERROR("CRF_L1 execute error");
       }
       break;
@@ -647,6 +652,8 @@ const CRFPP::Option long_options[] = {
    "set FLOAT for termination criterion(default 0.0001)" },
   {"convert",  'C',  0,       0,
    "convert text model to binary model" },
+  {"batch",  'b',  "0",       "INT",
+    "number of check point batch" },
   {"textmodel", 't', 0,       0,
    "build also text model file for debugging" },
   {"algorithm",  'a', "CRF",   "(CRF|MIRA)", "select training algorithm" },
@@ -679,6 +686,7 @@ int crfpp_learn(const Param &param) {
   const double         C              = param.get<float>("cost");
   const double         eta            = param.get<float>("eta");
   const bool           textmodel      = param.get<bool>("textmodel");
+  const size_t         batch          = param.get<int>("batch");
   const unsigned short thread         =
       CRFPP::getThreadSize(param.get<unsigned short>("thread"));
   const unsigned short shrinking_size
@@ -710,7 +718,7 @@ int crfpp_learn(const Param &param) {
                        rest[1].c_str(),
                        rest[2].c_str(),
                        textmodel,
-                       maxiter, freq, eta, C, thread, shrinking_size,
+                       batch, maxiter, freq, eta, C, thread, shrinking_size,
                        algorithm)) {
       std::cerr << encoder.what() << std::endl;
       return -1;
