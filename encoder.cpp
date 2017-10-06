@@ -600,6 +600,7 @@ bool Encoder::learn(const char *templfile,
   std::cout << "Freq:                " << freq << std::endl;
   std::cout << "eta:                 " << eta << std::endl;
   std::cout << "C:                   " << C << std::endl;
+  std::cout << "Batch:               " << batch << std::endl;
   std::cout << "shrinking size:      " << shrinking_size
             << std::endl;
 
