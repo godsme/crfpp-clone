@@ -348,7 +348,7 @@ struct CRFTrainer {
                       << " diff="  << diff << std::endl;
             old_obj = thread[0].obj;
 
-            if (diff < eta) {
+            if (diff <= eta) {
               converge++;
             } else {
               converge = 0;
