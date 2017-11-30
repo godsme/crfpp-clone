@@ -6,6 +6,9 @@ config.status
 libtool
 stamp-h1
 example/train/*
+java/*.jar
+java/**/*.class
+java/*.so
 *.o
 *.lo
 *.la
